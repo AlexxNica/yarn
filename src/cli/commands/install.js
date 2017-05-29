@@ -11,9 +11,9 @@ import {MessageError} from '../../errors.js';
 import InstallationIntegrityChecker from '../../integrity-checker.js';
 import Lockfile from '../../lockfile/wrapper.js';
 import lockStringify from '../../lockfile/stringify.js';
-import PackageFetcher from '../../package-fetcher.js';
+import * as fetcher from '../../package-fetcher.js';
 import PackageInstallScripts from '../../package-install-scripts.js';
-import PackageCompatibility from '../../package-compatibility.js';
+import * as compatibility from '../../package-compatibility.js';
 import PackageResolver from '../../package-resolver.js';
 import PackageLinker from '../../package-linker.js';
 import PackageRequest from '../../package-request.js';
@@ -167,9 +167,7 @@ export class Install {
     this.flags = normalizeFlags(config, flags);
 
     this.resolver = new PackageResolver(config, lockfile);
-    this.fetcher = new PackageFetcher(config, this.resolver);
     this.integrityChecker = new InstallationIntegrityChecker(config);
-    this.compatibility = new PackageCompatibility(config, this.resolver, this.flags.ignoreEngines);
     this.linker = new PackageLinker(config, this.resolver);
     this.scripts = new PackageInstallScripts(config, this.resolver, this.flags.force);
   }
@@ -184,8 +182,6 @@ export class Install {
   resolver: PackageResolver;
   scripts: PackageInstallScripts;
   linker: PackageLinker;
-  compatibility: PackageCompatibility;
-  fetcher: PackageFetcher;
   rootPatternsToOrigin: {[pattern: string]: string};
   integrityChecker: InstallationIntegrityChecker;
 
@@ -230,30 +226,30 @@ export class Install {
 
       const rootCwd = this.config.cwd;
       // if project has workspaces we aggreagate all dependences from workspaces into root
-      if (projectManifestJson.workspaces && this.config.workspacesExperimental) {
+      if (projectManifestJson.workspaces) {
         if (!projectManifestJson.private) {
           throw new MessageError(this.reporter.lang('workspacesRequirePrivateProjects'));
         }
-        for (const workspace of projectManifestJson.workspaces) {
-          for (const workspaceLoc of await fs.glob(path.join(rootCwd, workspace, filename))) {
-            const workspaceCwd = path.dirname(workspaceLoc);
-            const workspaceJson: Manifest = await this.config.readJson(workspaceLoc);
-            await normalizeManifest(workspaceJson, workspaceCwd, this.config, true);
-            for (const type of ['dependencies', 'devDependencies', 'optionalDependencies']) {
-              if (workspaceJson[type]) {
-                for (const key in workspaceJson[type]) {
-                  if (
-                    projectManifestJson[type] &&
-                    projectManifestJson[type][key] &&
-                    projectManifestJson[type][key] !== workspaceJson[type][key]
-                  ) {
-                    // TODO conflicts should still be installed inside workspaces' folders
-                    throw new MessageError(
-                      this.reporter.lang('workspacesIncompatibleDependencies', key, workspaceCwd, rootCwd),
-                    );
-                  }
-                  projectManifestJson[type][key] = workspaceJson[type][key];
+        const workspaces = await this.config.resolveWorkspaces(path.dirname(loc), projectManifestJson.workspaces);
+        const workspaceEntries = Object.keys(workspaces).map(name => workspaces[name]);
+        for (const {loc: workspaceLoc, manifest: workspaceManifest} of workspaceEntries) {
+          for (const type of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+            if (workspaceManifest[type]) {
+              for (const key of Object.keys(workspaceManifest[type])) {
+                if (
+                  projectManifestJson[type] &&
+                  projectManifestJson[type][key] &&
+                  projectManifestJson[type][key] !== workspaceManifest[type][key]
+                ) {
+                  // TODO conflicts should still be installed inside workspaces' folders
+                  throw new MessageError(
+                    this.reporter.lang('workspacesIncompatibleDependencies', key, workspaceLoc, rootCwd),
+                  );
                 }
+                if (!projectManifestJson[type]) {
+                  projectManifestJson[type] = {};
+                }
+                projectManifestJson[type][key] = workspaceManifest[type][key];
               }
             }
           }
@@ -428,8 +424,9 @@ export class Install {
     steps.push(async (curr: number, total: number) => {
       this.markIgnored(ignorePatterns);
       this.reporter.step(curr, total, this.reporter.lang('fetchingPackages'), emoji.get('truck'));
-      await this.fetcher.init();
-      await this.compatibility.init();
+      const manifests: Array<Manifest> = await fetcher.fetch(this.resolver.getManifests(), this.config);
+      this.resolver.updateManifests(manifests);
+      await compatibility.check(this.resolver.getManifests(), this.config, this.flags.ignoreEngines);
     });
 
     steps.push(async (curr: number, total: number) => {
@@ -614,10 +611,11 @@ export class Install {
       }
     }
 
-    const mirrorTarballs = await fs.walk(mirror);
-    for (const tarball of mirrorTarballs) {
-      if (!requiredTarballs.has(tarball.basename)) {
-        await fs.unlink(tarball.absolute);
+    const mirrorFiles = await fs.walk(mirror);
+    for (const file of mirrorFiles) {
+      const isTarball = path.extname(file.basename) === '.tgz';
+      if (isTarball && !requiredTarballs.has(file.basename)) {
+        await fs.unlink(file.absolute);
       }
     }
   }
@@ -660,7 +658,7 @@ export class Install {
     }
 
     // build lockfile location
-    const loc = path.join(this.config.cwd, constants.LOCKFILE_FILENAME);
+    const loc = path.join(this.config.lockfileFolder, constants.LOCKFILE_FILENAME);
 
     // write lockfile
     const lockSource = lockStringify(lockfileBasedOnResolver, false, this.config.disableLockfileVersions);
@@ -686,8 +684,9 @@ export class Install {
 
     if (fetch) {
       // fetch packages, should hit cache most of the time
-      await this.fetcher.init();
-      await this.compatibility.init();
+      const manifests: Array<Manifest> = await fetcher.fetch(this.resolver.getManifests(), this.config);
+      this.resolver.updateManifests(manifests);
+      await compatibility.check(this.resolver.getManifests(), this.config, this.flags.ignoreEngines);
 
       // expand minimal manifests
       for (const manifest of this.resolver.getManifests()) {
@@ -796,7 +795,7 @@ export async function run(config: Config, reporter: Reporter, flags: Object, arg
   if (flags.lockfile === false) {
     lockfile = new Lockfile();
   } else {
-    lockfile = await Lockfile.fromDirectory(config.cwd, reporter);
+    lockfile = await Lockfile.fromDirectory(config.lockfileFolder, reporter);
   }
 
   if (args.length) {

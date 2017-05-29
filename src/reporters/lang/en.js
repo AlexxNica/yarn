@@ -94,7 +94,7 @@ const messages = {
   frozenLockfileError: 'Your lockfile needs to be updated, but yarn was run with `--frozen-lockfile`.',
   fileWriteError: 'Could not write file $0: $1',
   multiplePackagesCantUnpackInSameDestination: 'Pattern $0 is trying to unpack in the same destination $1 as pattern $2. This could result in a non deterministic behavior, skipping.',
-  incorrectLockfileEntry: 'Lockfile has incorrect entry for $0. Ingoring it.',
+  incorrectLockfileEntry: 'Lockfile has incorrect entry for $0. Ignoring it.',
   workspacesIncompatibleDependencies: 'Dependency $0 has different versions in $1 and $2',
   workspacesRequirePrivateProjects: 'Workspaces can only be enabled for private projects',
 
@@ -139,6 +139,14 @@ const messages = {
 
   createInvalidBin: 'Invalid bin entry found in package $0.',
   createMissingPackage: 'Package not found - this is probably an internal error, and should be reported at https://github.com/yarnpkg/yarn/issues.',
+
+  worktreeExperimentalDisabled: 'The worktree feature is currently experimental and needs to be manually enabled - please add "workspaces-experimental true" to your .yarnrc file.',
+  worktreeRootNotFound: "Cannot find the root of your worktree - are you sure you're currently in a workspace?",
+  worktreeMissingWorkspace: 'Missing workspace name.',
+  worktreeMissingCommand: 'Missing command name.',
+  worktreeUnknownWorkspace: 'Unknown workspace $0.',
+
+  execMissingCommand: 'Missing command name.',
 
   commandNotSpecified: 'No command specified.',
   binCommands: 'Commands available from binary scripts: ',
